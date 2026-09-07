@@ -5,7 +5,7 @@ LC 20260907
 
 `pqnii` (to be read _picknee_) is a lightweight Python module for quick, interactive 2D slice visualization of NIfTI volumes (`.nii` / `.nii.gz`) directly inside Quarto reports (and maybe Jupyter Notebooks, but I didn't test it). The name was inspired by the need to "quickly peek into a nifti image in a quarto (notebook)".
 
-![](./assets/pqnii.png)
+![](./assets/pqnii.gif)
 
 ## Motivation
 
