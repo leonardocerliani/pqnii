@@ -1,0 +1,34 @@
+---
+title: "Nifti Viewer"
+format:
+  html:
+    theme: cerulean
+    toc: true
+    code-fold: true
+    embed-resources: true
+jupyter: python3
+---
+
+
+```{python}
+from pqnii import pqnii
+
+data_folder='data'
+
+# Load single image
+pqnii(
+  f'{data_folder}/MNI152_T1_2mm_brain.nii.gz'
+)
+
+pqnii(
+    image_path=f'{data_folder}/MNI152_T1_2mm_brain.nii.gz',
+    overlay_path=f'{data_folder}/HO_2mm.nii.gz',
+    width=400,
+    height=400
+)
+
+```
+
+
+
+

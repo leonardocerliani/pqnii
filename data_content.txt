@@ -1,0 +1,5 @@
+data/
+├── HO_2mm.nii.gz
+└── MNI152_T1_2mm_brain.nii.gz
+
+0 directories, 2 files
