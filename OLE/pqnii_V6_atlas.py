@@ -70,134 +70,49 @@ def pqnii(
     colormap="red",
     max_dim=128,
 ):
-    """Interactive NIfTI slice viewer with strict dimension validation, click-and-drag crosshairs, and atlas outlines."""
+    """Interactive NIfTI slice viewer with click-and-drag crosshair navigation, atlas outlines, and JSON labels."""
     img_path = Path(image_path).resolve()
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image file not found: {img_path}")
 
-    # 1. Load Base Image & Validate Dimensions
-    try:
-        if not img_path.exists():
-            raise FileNotFoundError(f"Image file not found: {img_path.name}")
+    # Load Base Image and reorient to RAS+
+    img = nib.load(img_path)
+    img = nib.as_closest_canonical(img)
+    data = np.asarray(img.get_fdata(dtype=np.float32))
+    if data.ndim > 3:
+        data = data[..., 0]
 
-        img = nib.load(img_path)
-        img = nib.as_closest_canonical(img)
-        data = np.asarray(img.get_fdata(dtype=np.float32))
-        if data.ndim > 3:
-            data = data[..., 0]
+    header = img.header
+    zooms = [float(z) for z in header.get_zooms()[:3]]
 
-        base_shape = data.shape[:3]
-        base_zooms = np.round(img.header.get_zooms()[:3], 4)
-
-        # 2. Validate and Load Overlay
-        has_overlay = overlay_path is not None
-        ov_data = None
-        overlay_filename = ""
-
-        if has_overlay:
-            ov_path = Path(overlay_path).resolve()
-            if not ov_path.exists():
-                raise FileNotFoundError(f"Overlay file not found: {ov_path.name}")
-            overlay_filename = ov_path.name
-
-            ov_img = nib.load(ov_path)
-            ov_img = nib.as_closest_canonical(ov_img)
-            ov_data = np.asarray(ov_img.get_fdata(dtype=np.float32))
-            if ov_data.ndim > 3:
-                ov_data = ov_data[..., 0]
-
-            ov_shape = ov_data.shape[:3]
-            ov_zooms = np.round(ov_img.header.get_zooms()[:3], 4)
-
-            if base_shape != ov_shape or not np.array_equal(base_zooms, ov_zooms):
-                raise ValueError(
-                    f"<b>Overlay Dimension Mismatch</b><br><br>"
-                    f"<b>Base Image ({img_path.name}):</b><br>"
-                    f"• Shape: {base_shape}<br>• Voxel Sizes: {base_zooms.tolist()} mm<br><br>"
-                    f"<b>Overlay ({overlay_filename}):</b><br>"
-                    f"• Shape: {ov_shape}<br>• Voxel Sizes: {ov_zooms.tolist()} mm"
-                )
-
-        # 3. Validate and Load Atlas
-        has_atlas = atlas_path is not None
-        atl_data = None
-        atlas_filename = ""
-        atlas_labels = {}
-
-        if has_atlas:
-            atl_path = Path(atlas_path).resolve()
-            if not atl_path.exists():
-                raise FileNotFoundError(f"Atlas file not found: {atl_path.name}")
-            atlas_filename = atl_path.name
-
-            atl_img = nib.load(atl_path)
-            atl_img = nib.as_closest_canonical(atl_img)
-            atl_data = np.asarray(atl_img.get_fdata(dtype=np.float32))
-            if atl_data.ndim > 3:
-                atl_data = atl_data[..., 0]
-
-            atl_shape = atl_data.shape[:3]
-            atl_zooms = np.round(atl_img.header.get_zooms()[:3], 4)
-
-            if base_shape != atl_shape or not np.array_equal(base_zooms, atl_zooms):
-                raise ValueError(
-                    f"<b>Atlas Dimension Mismatch</b><br><br>"
-                    f"<b>Base Image ({img_path.name}):</b><br>"
-                    f"• Shape: {base_shape}<br>• Voxel Sizes: {base_zooms.tolist()} mm<br><br>"
-                    f"<b>Atlas ({atlas_filename}):</b><br>"
-                    f"• Shape: {atl_shape}<br>• Voxel Sizes: {atl_zooms.tolist()} mm"
-                )
-
-            # Parse labels
-            if labels_path is None:
-                if atl_path.name.endswith(".nii.gz"):
-                    base_name = atl_path.name[:-7]
-                elif atl_path.name.endswith(".nii"):
-                    base_name = atl_path.name[:-4]
-                else:
-                    base_name = atl_path.stem
-                resolved_labels_path = atl_path.parent / f"{base_name}.labels"
-            else:
-                resolved_labels_path = Path(labels_path)
-
-            atlas_labels = _parse_label_file(resolved_labels_path)
-
-    except (ValueError, FileNotFoundError) as err:
-        return HTML(f"""
-        <div style="
-            width: {width + 200}px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: #1c1012;
-            border: 1px solid #f85149;
-            border-radius: 8px;
-            padding: 16px;
-            color: #f85149;
-            box-sizing: border-box;
-            font-size: 13px;
-            line-height: 1.5;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        ">
-            <div style="font-weight: 700; font-size: 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                ⚠️ Cannot Load Volumes
-            </div>
-            <div style="color: #e1e4e8;">
-                {str(err)}
-            </div>
-        </div>
-        """)
-
-    # 4. Prepare Subsampling and Encoding
-    strides = [max(1, int(np.ceil(s / max_dim))) for s in base_shape]
+    strides = [max(1, int(np.ceil(s / max_dim))) for s in data.shape[:3]]
     data_sub = data[:: strides[0], :: strides[1], :: strides[2]]
     shape = [int(s) for s in data_sub.shape[:3]]
-    effective_zooms = [float(base_zooms[i] * strides[i]) for i in range(3)]
+
+    # Adjust zooms according to subsampling strides
+    effective_zooms = [zooms[i] * strides[i] for i in range(3)]
 
     base_b64, d_min, d_max, base_dtype, base_is_int = _encode_volume(data_sub)
 
+    # Process Overlay
+    has_overlay = overlay_path is not None
     overlay_b64 = ""
     ov_min, ov_max = 0.0, 1.0
     p5, p95 = 0.0, 1.0
+    overlay_filename = ""
     ov_dtype, ov_is_int = "uint8_norm", False
 
-    if has_overlay and ov_data is not None:
+    if has_overlay:
+        ov_path = Path(overlay_path).resolve()
+        if not ov_path.exists():
+            raise FileNotFoundError(f"Overlay file not found: {ov_path}")
+        overlay_filename = ov_path.name
+        ov_img = nib.load(ov_path)
+        ov_img = nib.as_closest_canonical(ov_img)
+        ov_data = np.asarray(ov_img.get_fdata(dtype=np.float32))
+        if ov_data.ndim > 3:
+            ov_data = ov_data[..., 0]
+
         ov_data_sub = ov_data[:: strides[0], :: strides[1], :: strides[2]]
         overlay_b64, ov_min, ov_max, ov_dtype, ov_is_int = _encode_volume(ov_data_sub)
 
@@ -208,13 +123,42 @@ def pqnii(
         else:
             p5, p95 = ov_min, ov_max
 
+    # Process Atlas
+    has_atlas = atlas_path is not None
     atlas_b64 = ""
     atlas_min, atlas_max = 0.0, 0.0
+    atlas_filename = ""
     atlas_dtype, atlas_is_int = "uint8", True
+    atlas_labels = {}
 
-    if has_atlas and atl_data is not None:
+    if has_atlas:
+        atl_path = Path(atlas_path).resolve()
+        if not atl_path.exists():
+            raise FileNotFoundError(f"Atlas file not found: {atl_path}")
+        atlas_filename = atl_path.name
+        atl_img = nib.load(atl_path)
+        atl_img = nib.as_closest_canonical(atl_img)
+        atl_data = np.asarray(atl_img.get_fdata(dtype=np.float32))
+        if atl_data.ndim > 3:
+            atl_data = atl_data[..., 0]
+
         atl_data_sub = atl_data[:: strides[0], :: strides[1], :: strides[2]]
         atlas_b64, atlas_min, atlas_max, atlas_dtype, atlas_is_int = _encode_volume(atl_data_sub)
+
+        # Infer labels_path from atlas_path if not explicitly provided
+        if labels_path is None:
+            if atl_path.name.endswith(".nii.gz"):
+                base_name = atl_path.name[:-7]
+            elif atl_path.name.endswith(".nii"):
+                base_name = atl_path.name[:-4]
+            else:
+                base_name = atl_path.stem
+
+            resolved_labels_path = atl_path.parent / f"{base_name}.labels"
+        else:
+            resolved_labels_path = Path(labels_path)
+
+        atlas_labels = _parse_label_file(resolved_labels_path)
 
     uid = uuid.uuid4().hex
     canvas_id, info_id = f"cv_{uid}", f"info_{uid}"
@@ -364,12 +308,12 @@ def pqnii(
         .nv-file-info {{
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
             font-size: 10px;
-            color: #58a6ff;
+            color: #c9d1d9;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             background: rgba(0, 0, 0, 0.2);
-            padding: 2px 5px;
+            padding: 3px 6px;
             border-radius: 4px;
             border: 1px solid rgba(255, 255, 255, 0.04);
         }}
@@ -434,7 +378,7 @@ def pqnii(
 
                 <div class="nv-sidebar-section" style="margin-top:auto;">
                     <div class="nv-section-title">Loaded Files</div>
-                    <div style="display:flex; flex-direction:column; gap:2px;">
+                    <div style="display:flex; flex-direction:column; gap:6px;">
                         <div style="display:flex; align-items:center; gap:6px;">
                             <span style="width:22px; font-weight:600;">BG:</span>
                             <div class="nv-file-info" style="flex:1;" title="{bg_filename}">{bg_filename}</div>
@@ -705,7 +649,7 @@ def pqnii(
                 }}
 
                 atlasHtml = `
-                    <div style="margin-top:12px;">Atlas ID: <span class="nv-val-highlight">${{atVal}}</span></div>
+                    <div style="margin-top:2px;">Atlas ID: <span class="nv-val-highlight">${{atVal}}</span></div>
                     <div style="font-size:10px; word-break:break-word;">Label: <span class="nv-val-highlight">${{labelText}}</span></div>
                 `;
             }}

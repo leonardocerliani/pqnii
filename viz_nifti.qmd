@@ -15,20 +15,48 @@ from pqnii import pqnii
 
 data_folder='data'
 
-# Load single image
-pqnii(
-  f'{data_folder}/MNI152_T1_2mm_brain.nii.gz'
-)
-
+# Load also the atlas
 pqnii(
     image_path=f'{data_folder}/MNI152_T1_2mm_brain.nii.gz',
     overlay_path=f'{data_folder}/HO_2mm.nii.gz',
+    atlas_path=f'{data_folder}/HO_cortical_2mm.nii.gz',
     width=400,
     height=400
 )
+
+
+# # Load single image
+# pqnii(
+#   f'{data_folder}/MNI152_T1_2mm_brain.nii.gz'
+# )
+
+# # Load image with overlay
+# pqnii(
+#     image_path=f'{data_folder}/MNI152_T1_2mm_brain.nii.gz',
+#     overlay_path=f'{data_folder}/HO_2mm.nii.gz',
+#     width=400,
+#     height=400
+# )
+
+
 
 ```
 
 
 
+```{python}
+
+from pqnii import pqnii
+
+data_folder='data'
+
+# Load allen atlas
+pqnii(
+  image_path=f'{data_folder}/allen_histology.nii.gz',
+  overlay_path=f'{data_folder}/allen_vascular.nii.gz',
+  atlas_path=f'{data_folder}/allen_regions.nii.gz',
+  max_dim=256
+)
+
+```
 

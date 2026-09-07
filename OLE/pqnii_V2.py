@@ -9,10 +9,14 @@ import numpy as np
 
 
 def _encode_volume(arr):
-    """Encodes volume data losslessly for integers or falls back to normalized uint8 quantization for floats."""
+    """
+    Encodes volume data losslessly for integers (if range fits uint8/int16/uint16)
+    or falls back to normalized uint8 quantization for floats.
+    """
     arr_min = float(np.nanmin(arr))
     arr_max = float(np.nanmax(arr))
-
+    
+    # Check if array is purely integer valued
     is_int = np.issubdtype(arr.dtype, np.integer) or np.all(arr == np.floor(arr))
 
     if is_int:
@@ -28,10 +32,11 @@ def _encode_volume(arr):
         else:
             dtype_str = "float32"
             byte_data = arr.astype(np.float32).tobytes(order="C")
-
+        
         b64 = base64.b64encode(zlib.compress(byte_data, level=6)).decode("ascii")
         return b64, arr_min, arr_max, dtype_str, True
 
+    # Fallback to normalized uint8 quantization for floats
     dtype_str = "uint8_norm"
     norm_data = (
         ((arr - arr_min) / (arr_max - arr_min) * 255)
@@ -43,161 +48,47 @@ def _encode_volume(arr):
     return b64, arr_min, arr_max, dtype_str, False
 
 
-def _parse_label_file(label_path):
-    """Parses JSON label file mapping string keys to dict(name, acronym), converting keys to integers."""
-    labels = {}
-    path = Path(label_path)
-    if not path.exists():
-        return labels
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            labels = {int(k): v for k, v in data.items()}
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"Warning: Could not parse labels file {path}: {e}")
-
-    return labels
-
-
 def pqnii(
     image_path,
     overlay_path=None,
-    atlas_path=None,
-    labels_path=None,
     width=400,
     height=400,
     colormap="red",
     max_dim=128,
 ):
-    """Interactive NIfTI slice viewer with strict dimension validation, click-and-drag crosshairs, and atlas outlines."""
+    """Interactive NIfTI slice viewer with click-and-drag crosshair navigation."""
     img_path = Path(image_path).resolve()
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image file not found: {img_path}")
 
-    # 1. Load Base Image & Validate Dimensions
-    try:
-        if not img_path.exists():
-            raise FileNotFoundError(f"Image file not found: {img_path.name}")
+    img = nib.load(img_path)
+    data = np.asarray(img.get_fdata(dtype=np.float32))
+    if data.ndim > 3:
+        data = data[..., 0]
 
-        img = nib.load(img_path)
-        img = nib.as_closest_canonical(img)
-        data = np.asarray(img.get_fdata(dtype=np.float32))
-        if data.ndim > 3:
-            data = data[..., 0]
-
-        base_shape = data.shape[:3]
-        base_zooms = np.round(img.header.get_zooms()[:3], 4)
-
-        # 2. Validate and Load Overlay
-        has_overlay = overlay_path is not None
-        ov_data = None
-        overlay_filename = ""
-
-        if has_overlay:
-            ov_path = Path(overlay_path).resolve()
-            if not ov_path.exists():
-                raise FileNotFoundError(f"Overlay file not found: {ov_path.name}")
-            overlay_filename = ov_path.name
-
-            ov_img = nib.load(ov_path)
-            ov_img = nib.as_closest_canonical(ov_img)
-            ov_data = np.asarray(ov_img.get_fdata(dtype=np.float32))
-            if ov_data.ndim > 3:
-                ov_data = ov_data[..., 0]
-
-            ov_shape = ov_data.shape[:3]
-            ov_zooms = np.round(ov_img.header.get_zooms()[:3], 4)
-
-            if base_shape != ov_shape or not np.array_equal(base_zooms, ov_zooms):
-                raise ValueError(
-                    f"<b>Overlay Dimension Mismatch</b><br><br>"
-                    f"<b>Base Image ({img_path.name}):</b><br>"
-                    f"• Shape: {base_shape}<br>• Voxel Sizes: {base_zooms.tolist()} mm<br><br>"
-                    f"<b>Overlay ({overlay_filename}):</b><br>"
-                    f"• Shape: {ov_shape}<br>• Voxel Sizes: {ov_zooms.tolist()} mm"
-                )
-
-        # 3. Validate and Load Atlas
-        has_atlas = atlas_path is not None
-        atl_data = None
-        atlas_filename = ""
-        atlas_labels = {}
-
-        if has_atlas:
-            atl_path = Path(atlas_path).resolve()
-            if not atl_path.exists():
-                raise FileNotFoundError(f"Atlas file not found: {atl_path.name}")
-            atlas_filename = atl_path.name
-
-            atl_img = nib.load(atl_path)
-            atl_img = nib.as_closest_canonical(atl_img)
-            atl_data = np.asarray(atl_img.get_fdata(dtype=np.float32))
-            if atl_data.ndim > 3:
-                atl_data = atl_data[..., 0]
-
-            atl_shape = atl_data.shape[:3]
-            atl_zooms = np.round(atl_img.header.get_zooms()[:3], 4)
-
-            if base_shape != atl_shape or not np.array_equal(base_zooms, atl_zooms):
-                raise ValueError(
-                    f"<b>Atlas Dimension Mismatch</b><br><br>"
-                    f"<b>Base Image ({img_path.name}):</b><br>"
-                    f"• Shape: {base_shape}<br>• Voxel Sizes: {base_zooms.tolist()} mm<br><br>"
-                    f"<b>Atlas ({atlas_filename}):</b><br>"
-                    f"• Shape: {atl_shape}<br>• Voxel Sizes: {atl_zooms.tolist()} mm"
-                )
-
-            # Parse labels
-            if labels_path is None:
-                if atl_path.name.endswith(".nii.gz"):
-                    base_name = atl_path.name[:-7]
-                elif atl_path.name.endswith(".nii"):
-                    base_name = atl_path.name[:-4]
-                else:
-                    base_name = atl_path.stem
-                resolved_labels_path = atl_path.parent / f"{base_name}.labels"
-            else:
-                resolved_labels_path = Path(labels_path)
-
-            atlas_labels = _parse_label_file(resolved_labels_path)
-
-    except (ValueError, FileNotFoundError) as err:
-        return HTML(f"""
-        <div style="
-            width: {width + 200}px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: #1c1012;
-            border: 1px solid #f85149;
-            border-radius: 8px;
-            padding: 16px;
-            color: #f85149;
-            box-sizing: border-box;
-            font-size: 13px;
-            line-height: 1.5;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        ">
-            <div style="font-weight: 700; font-size: 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                ⚠️ Cannot Load Volumes
-            </div>
-            <div style="color: #e1e4e8;">
-                {str(err)}
-            </div>
-        </div>
-        """)
-
-    # 4. Prepare Subsampling and Encoding
-    strides = [max(1, int(np.ceil(s / max_dim))) for s in base_shape]
+    strides = [max(1, int(np.ceil(s / max_dim))) for s in data.shape[:3]]
     data_sub = data[:: strides[0], :: strides[1], :: strides[2]]
     shape = [int(s) for s in data_sub.shape[:3]]
-    effective_zooms = [float(base_zooms[i] * strides[i]) for i in range(3)]
 
     base_b64, d_min, d_max, base_dtype, base_is_int = _encode_volume(data_sub)
 
+    has_overlay = overlay_path is not None
     overlay_b64 = ""
     ov_min, ov_max = 0.0, 1.0
     p5, p95 = 0.0, 1.0
+    overlay_filename = ""
     ov_dtype, ov_is_int = "uint8_norm", False
 
-    if has_overlay and ov_data is not None:
+    if has_overlay:
+        ov_path = Path(overlay_path).resolve()
+        if not ov_path.exists():
+            raise FileNotFoundError(f"Overlay file not found: {ov_path}")
+        overlay_filename = ov_path.name
+        ov_img = nib.load(ov_path)
+        ov_data = np.asarray(ov_img.get_fdata(dtype=np.float32))
+        if ov_data.ndim > 3:
+            ov_data = ov_data[..., 0]
+
         ov_data_sub = ov_data[:: strides[0], :: strides[1], :: strides[2]]
         overlay_b64, ov_min, ov_max, ov_dtype, ov_is_int = _encode_volume(ov_data_sub)
 
@@ -208,14 +99,6 @@ def pqnii(
         else:
             p5, p95 = ov_min, ov_max
 
-    atlas_b64 = ""
-    atlas_min, atlas_max = 0.0, 0.0
-    atlas_dtype, atlas_is_int = "uint8", True
-
-    if has_atlas and atl_data is not None:
-        atl_data_sub = atl_data[:: strides[0], :: strides[1], :: strides[2]]
-        atlas_b64, atlas_min, atlas_max, atlas_dtype, atlas_is_int = _encode_volume(atl_data_sub)
-
     uid = uuid.uuid4().hex
     canvas_id, info_id = f"cv_{uid}", f"info_{uid}"
     btn_view_id, btn_color_id = f"btn_v_{uid}", f"btn_c_{uid}"
@@ -225,8 +108,6 @@ def pqnii(
     max_slider_id, max_val_id = f"sl_max_{uid}", f"max_val_{uid}"
 
     shape_js = json.dumps(shape)
-    zooms_js = json.dumps(effective_zooms)
-    labels_js = json.dumps(atlas_labels)
     bg_filename = img_path.name
 
     return HTML(f"""
@@ -364,12 +245,12 @@ def pqnii(
         .nv-file-info {{
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
             font-size: 10px;
-            color: #58a6ff;
+            color: #c9d1d9;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             background: rgba(0, 0, 0, 0.2);
-            padding: 2px 5px;
+            padding: 3px 6px;
             border-radius: 4px;
             border: 1px solid rgba(255, 255, 255, 0.04);
         }}
@@ -434,7 +315,7 @@ def pqnii(
 
                 <div class="nv-sidebar-section" style="margin-top:auto;">
                     <div class="nv-section-title">Loaded Files</div>
-                    <div style="display:flex; flex-direction:column; gap:2px;">
+                    <div style="display:flex; flex-direction:column; gap:6px;">
                         <div style="display:flex; align-items:center; gap:6px;">
                             <span style="width:22px; font-weight:600;">BG:</span>
                             <div class="nv-file-info" style="flex:1;" title="{bg_filename}">{bg_filename}</div>
@@ -442,10 +323,6 @@ def pqnii(
                         <div style="display:flex; align-items:center; gap:6px; {'display:none;' if not has_overlay else ''}">
                             <span style="width:22px; font-weight:600;">OV:</span>
                             <div class="nv-file-info" style="flex:1;" title="{overlay_filename}">{overlay_filename}</div>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:6px; {'display:none;' if not has_atlas else ''}">
-                            <span style="width:22px; font-weight:600;">AT:</span>
-                            <div class="nv-file-info" style="flex:1;" title="{atlas_filename}">{atlas_filename}</div>
                         </div>
                     </div>
                 </div>
@@ -456,20 +333,13 @@ def pqnii(
     <script>
     (async function() {{
         const shape = {shape_js};
-        const zooms = {zooms_js};
-        const labelsMap = {labels_js};
         const nx = shape[0], ny = shape[1], nz = shape[2];
         const baseMin = {d_min}, baseMax = {d_max};
         const ovAbsMin = {ov_min}, ovAbsMax = {ov_max};
-        const atlasMin = {atlas_min}, atlasMax = {atlas_max};
-
         const baseDtype = "{base_dtype}";
         const ovDtype = "{ov_dtype}";
-        const atlasDtype = "{atlas_dtype}";
-
         const baseIsInt = {str(base_is_int).lower()};
         const ovIsInt = {str(ov_is_int).lower()};
-        const atlasIsInt = {str(atlas_is_int).lower()};
 
         async function decompressZlib(b64, dtype) {{
             const bin = atob(b64);
@@ -482,7 +352,7 @@ def pqnii(
             writer.close();
 
             const buffer = await new Response(cs.readable).arrayBuffer();
-
+            
             if (dtype === "uint8" || dtype === "uint8_norm") return new Uint8Array(buffer);
             if (dtype === "int16") return new Int16Array(buffer);
             if (dtype === "uint16") return new Uint16Array(buffer);
@@ -506,9 +376,6 @@ def pqnii(
         const baseVol = await decompressZlib("{base_b64}", baseDtype);
         const hasOverlay = {str(has_overlay).lower()};
         const overlayVol = hasOverlay ? await decompressZlib("{overlay_b64}", ovDtype) : null;
-
-        const hasAtlas = {str(has_atlas).lower()};
-        const atlasVol = hasAtlas ? await decompressZlib("{atlas_b64}", atlasDtype) : null;
 
         let viewMode = "coronal";
         let activeCmap = "{colormap.lower()}";
@@ -559,18 +426,15 @@ def pqnii(
             ctx.fillStyle = "#000";
             ctx.fillRect(0, 0, cw, ch);
 
-            let sw, sh, swIdx, shIdx, pX, pY;
+            let sw, sh, swIdx, shIdx;
             if (viewMode === "axial") {{
                 sw = nx; sh = ny;
-                pX = zooms[0]; pY = zooms[1];
                 swIdx = currentVox[0]; shIdx = currentVox[1];
             }} else if (viewMode === "coronal") {{
                 sw = nx; sh = nz;
-                pX = zooms[0]; pY = zooms[2];
                 swIdx = currentVox[0]; shIdx = currentVox[2];
             }} else {{
                 sw = ny; sh = nz;
-                pX = zooms[1]; pY = zooms[2];
                 swIdx = currentVox[1]; shIdx = currentVox[2];
             }}
 
@@ -603,41 +467,6 @@ def pqnii(
                         }}
                     }}
 
-                    if (hasAtlas && atlasVol) {{
-                        const currentAtlasVal = atlasVol[vIdx];
-
-                        let rightAtlasVal = currentAtlasVal;
-                        if (col < sw - 1) {{
-                            let ri = i, rj = j, rk = k;
-                            if (viewMode === "axial") ri = col + 1;
-                            else if (viewMode === "coronal") ri = col + 1;
-                            else rj = col + 1;
-                            rightAtlasVal = atlasVol[getVoxelIdx(ri, rj, rk)];
-                        }}
-
-                        let downAtlasVal = currentAtlasVal;
-                        if (row > 0) {{
-                            let di = i, dj = j, dk = k;
-                            if (viewMode === "axial") dj = row - 1;
-                            else if (viewMode === "coronal") dk = row - 1;
-                            else dk = row - 1;
-                            downAtlasVal = atlasVol[getVoxelIdx(di, dj, dk)];
-                        }}
-
-                        if (currentAtlasVal !== rightAtlasVal || currentAtlasVal !== downAtlasVal) {{
-                            if (currentAtlasVal > 0 || rightAtlasVal > 0 || downAtlasVal > 0) {{
-                                const lineR = 255;
-                                const lineG = 255;
-                                const lineB = 255;
-                                const lineAlpha = 0.7;
-
-                                r = Math.floor(r * (1 - lineAlpha) + lineR * lineAlpha);
-                                g = Math.floor(g * (1 - lineAlpha) + lineG * lineAlpha);
-                                b = Math.floor(b * (1 - lineAlpha) + lineB * lineAlpha);
-                            }}
-                        }}
-                    }}
-
                     data[pxIdx] = r;
                     data[pxIdx + 1] = g;
                     data[pxIdx + 2] = b;
@@ -652,12 +481,9 @@ def pqnii(
             offscreen.height = sh;
             offscreen.getContext("2d").putImageData(imgData, 0, 0);
 
-            const physW = sw * pX;
-            const physH = sh * pY;
-            const scale = Math.min(cw / physW, ch / physH);
-
-            renderW = physW * scale;
-            renderH = physH * scale;
+            const scale = Math.min(cw / sw, ch / sh);
+            renderW = sw * scale;
+            renderH = sh * scale;
             offsetX = (cw - renderW) / 2;
             offsetY = (ch - renderH) / 2;
 
@@ -691,30 +517,10 @@ def pqnii(
                 ovHtml = `<div>OV Int: <span class="nv-val-highlight">${{ovStr}}</span></div>`;
             }}
 
-            let atlasHtml = "";
-            if (hasAtlas && atlasVol) {{
-                const rawAtVal = atlasVol[idx];
-                const atVal = Math.round(getActualValue(rawAtVal, atlasMin, atlasMax, atlasDtype));
-
-                let labelText = `Region ${{atVal}}`;
-                if (labelsMap[atVal]) {{
-                    const lObj = labelsMap[atVal];
-                    labelText = lObj.acronym ? `${{lObj.name}} (${{lObj.acronym}})` : lObj.name;
-                }} else if (atVal === 0) {{
-                    labelText = "Background";
-                }}
-
-                atlasHtml = `
-                    <div style="margin-top:12px;">Atlas ID: <span class="nv-val-highlight">${{atVal}}</span></div>
-                    <div style="font-size:10px; word-break:break-word;">Label: <span class="nv-val-highlight">${{labelText}}</span></div>
-                `;
-            }}
-
             infoEl.innerHTML = `
                 <div>Voxel: <span class="nv-val-highlight">[${{i}}, ${{j}}, ${{k}}]</span></div>
                 <div>BG Int: <span class="nv-val-highlight">${{valStr}}</span></div>
                 ${{ovHtml}}
-                ${{atlasHtml}}
             `;
         }}
 
@@ -771,7 +577,7 @@ def pqnii(
 
         const btnView = document.getElementById("{btn_view_id}");
         const ddView = document.getElementById("{dropdown_view_id}");
-
+        
         btnView.addEventListener("click", (e) => {{
             e.stopPropagation();
             ddView.style.display = ddView.style.display === "block" ? "none" : "block";
